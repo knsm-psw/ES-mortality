@@ -1,0 +1,470 @@
+---
+title: "Excess deaths in Europe 2020--2021"
+author: 
+  - name: "Tomasz Przechlewski"
+    email:  t.plata-przechlewski@psw.kwidzyn.edu.pl
+    affiliation: "Powiślańska Szkoła Wyższa (Kwidzyn/Poland)"
+description: (c) Tomasz Przechlewski / CC-BY license 
+date: "2021"
+output:
+  html_document:
+    includes:
+      before_body: misc_hdr.html
+---
+
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = F, message = F)
+library("ggplot2")
+library("dplyr")
+library("scales")
+library("ggthemes")
+library("ggpubr")
+library("tidyr")
+library("readr")
+library("stringr")
+library("ISOweek")
+library("knitr")
+
+source <- "© NI-KW @ github.com/knsm-psw/ | source: Eurostat demo_r_mwk_ts (Deaths by week and sex)"
+note <- source
+mainColor <- "deeppink"
+loessColor <- "steelblue"
+### picture dimensions
+pWd <- 10
+pHt <- 8.5
+pHtx <- 12.5
+pWdx <- 15.0
+```
+
+## Total excess mortality
+
+### The Data 
+
+Deaths data from Eurostat (`demo_r_mwk_ts`):
+
+```{r}
+library("eurostat")
+z <- get_eurostat("demo_r_mwk_ts",  stringsAsFactors = FALSE) %>%
+  mutate (time = as.character(time)) %>%
+  mutate (year = as.numeric(substr(time, 1, 4)), 
+          week = as.numeric(substr(time, 6,7)),
+          sex = as.factor(sex),
+          geo = as.factor(geo)) %>%
+  select (sex, geo, year, week, value=values) %>%
+  filter (sex == 'T')
+
+## country names
+nn <- read.csv("ecdc_countries_names_codes3166.csv", sep = ';',  header=T, na.string="NA" )
+```
+
+We define (weekly) excess mortality as a difference between number of deaths in 2020--2021 (`z1`) and 
+5 year average (2015--2019) for corresponding weeks (`z0`). The **absolute excess mortality**
+(`exm`) is defined as `z1 - z0` and the **relative excess mortality** (`exp`) is
+`(z1 - z0)/z0 · 100%`:
+
+```{r, echo=T}
+## mean weekly deaths 2015--2019
+z0 <- z %>% filter ( year >= 2015 & year < 2020) %>% 
+  group_by(geo, week) %>% 
+  summarise (d0 = mean(value, na.rm=T))
+## weekly deaths 2020--2021
+z1 <- z %>% filter ( year > 2019 ) %>% 
+  group_by(geo, year, week) %>% 
+  summarise ( d1 = sum(value))
+
+## join z0 z1 and compute differences
+zz <- left_join(z0, z1, by=c("week", "geo")) %>% 
+  drop_na(d0,d1) %>%
+  mutate (exp = (d1 - d0)/d0 * 100, exm = d1 - d0 )
+zz <- left_join(zz, nn, by=c('geo'='id'))
+```
+
+Compute last week each country reported:
+
+```{r, echo=T}
+## if NA then the country stop reporting in 2020
+zz.last.week <- zz %>% filter (year == 2021) %>% 
+  group_by (geo) %>% 
+  summarise (lw = last(week)) %>%
+    drop_na(lw)
+latestweek <- max (zz.last.week$lw)
+```
+
+The latest data is from `r latestweek` week, the oldest data
+is from `r min (zz.last.week$lw)` week. Countries which did not report 
+in 2021 (UK for example, were removed)
+
+We summarise all weeks (`exm`) for each country. Countries which 
+reported last earlier than for `r latestweek -6` week are excluded.
+
+```{r}
+### total exmort 
+zzt <- zz %>% group_by(geo) %>% summarise(country=last(country), 
+                                          exm = sum(exm), nm = sum(d0)) %>%
+  mutate (exmp = exm/nm * 100)
+
+zztt <- left_join(zzt, zz.last.week, by='geo') %>%  drop_na(lw) %>%
+  filter (lw >= latestweek - 6)
+countries.left <- nrow(zztt)
+```
+
+There are `r countries.left` countries which reported last for week
+`r latestweek -6` or later.
+
+
+### Total excess mortality by country
+
+
+```{r, warning=F, message=F, fig.width=pWd}
+x.note <- sprintf("%s\nFirst column in red = last week reported (excluded countries that reported in %i week or earlier)", source, latestweek - 6 - 1 )
+
+p5 <- zztt %>% ggplot(aes(x = reorder(country, exmp ))) +
+  geom_bar(aes(y = exmp), stat="identity", alpha=.4, fill=loessColor ) +
+  geom_text(aes(label=sprintf("%.1f", exmp), y= exmp ), 
+            vjust=0.25, hjust=1.25, size=2, color='black' ) +
+  geom_text(aes(label=sprintf("%.0f", lw), y= 0 ), 
+            vjust=0.25, hjust=-1.25, size=2, color='brown4' ) +
+  xlab(label="") +
+  ylab(label="") +
+  ggtitle("Total Excessive deaths in Europe 2020--2021",
+          subtitle ="Sum of (deaths_2020/2021 - average_2015--2019) / average_2015--2019 * 100%") +
+  theme_nikw() +
+  coord_flip() +
+  labs(caption=x.note)
+p5
+ggsave(plot=p5, "EU_exdeaths_total.png", width=pWd)
+```
+
+The same as above with Poland highlighted
+
+```{r, warning=F, message=F, fig.width=pWd}
+p6 <- zztt %>%  mutate( base=ifelse(geo=='PL', "1", "0")) %>% 
+  ggplot(aes(x = reorder(country, exmp ), fill=as.factor(base))) +
+  geom_bar(aes(y = exmp), stat="identity", alpha=.4 ) +
+  geom_text(aes(label=sprintf("%.1f", exmp), y= exmp ), 
+            vjust=0.25, hjust=1.25, size=2, color='black' ) +
+  geom_text(aes(label=sprintf("%.0f", lw), y= 0 ), 
+            vjust=0.25, hjust=-1.25, size=2, color='brown4' ) +
+  xlab(label="") +
+  ylab(label="") +
+  ggtitle("Total Excessive deaths in Europe 2020--2021",
+          subtitle ="Sum of (deaths_2020/2021 - average_2015--2019) / average_2015--2019 * 100%") +
+  theme_nikw() +
+  coord_flip() +
+  scale_fill_manual( values = c( "1"="red", "0"="steelblue" ), guide = FALSE ) +
+  labs(caption=x.note)
+p6
+ggsave(plot=p6, "EU_exdeaths_total_p.png", width=pWd)
+```
+
+### Dynamics of excess mortality 2020--2021
+
+Faceted line plots
+
+```{r, warning=F, fig.height=pHtx, fig.width=pWdx }
+#zznn <- left_join(zz, nn, by=c('geo'='id'))
+zznn <- zz
+
+p7 <- zznn %>% filter (! geo %in% c('AL', 'AM', 'IE', 'IS', 'UK', 'CY', 'GE', 'LI', 'ME')) %>%
+  mutate(date= as.Date(sprintf("%i-%i-1", year, week), "%Y-%U-%u") ) %>%
+  ##ggplot(aes(x = date, y =exp, group=geo, color=geo )) +
+  ggplot(aes(x = date, y =exp)) +
+  facet_wrap( ~country, scales = "fixed", ncol = 4, shrink = F) +
+  geom_point(size=.4) +
+  geom_smooth(method="loess", size=1, se = F, color="red",  span =.25) +
+  geom_hline(yintercept = 50, color="firebrick", alpha=.2, size=1) +
+  scale_y_continuous(breaks=seq(-100, 200, by=50)) +
+  coord_cartesian(ylim = c(-100, 200)) +
+  ggtitle("Excessive deaths in Europe 2020--2021",
+          subtitle ="(deaths_2020/2021 - average_2015--2019) / average_2015--2019 * 100%") +
+  theme_nikw() +
+  xlab(label="%") +
+  labs(caption=note)
+p7
+ggsave(plot=p7, "EU_exdeaths_total_x.png", width=pWd, height=pHtx)
+```
+
+Poland and the rest of Europe:
+
+```{r, warning=F, fig.width=pWd}
+p8 <- zznn %>% filter (! geo %in% c('AL', 'AM', 'IE', 'IS', 'UK', 'CY', 'GE', 'LI', 'ME')) %>%
+  mutate( base=ifelse(geo=='PL', "1", "0")) %>% 
+  mutate(date= as.Date(sprintf("%i-%i-1", year, week), "%Y-%U-%u") ) %>%
+  ggplot(aes(x = date, y =exp,  color=as.factor(base ))) +
+  ##ggplot(aes(x = date, y =exp)) +
+  geom_point(size=.4) +
+  geom_smooth(aes(x = date, y =exp, group=geo), method="loess", size=.3, se = F, span =.25) +
+  geom_hline(yintercept = 50, color="firebrick", alpha=.2, size=1) +
+  coord_cartesian(ylim = c(-100, 200)) +
+  scale_color_manual( values = c( "1"="red", "0"="steelblue" ), guide = FALSE ) +
+  theme_nikw() +
+  ylab(label="%") +
+  ggtitle("Excessive deaths in Europe 2020--2021 and Poland (red)",
+          subtitle ="(deaths_2020/2021 - average_2015--2019) / average_2015--2019 * 100%") +
+  scale_y_continuous(breaks=seq(-100, 200, by=50)) +
+  labs(caption=note)
+p8
+ggsave(plot=p8, "EU_exdeaths_total_y.png", width=pWd, height=pHt)
+```
+
+Polar coordinates (I like Nightingale rose chart)
+
+```{r, warning=F,  fig.height=18}
+p9 <- zznn %>% filter (! geo %in% c('AL', 'AM', 'IE', 'IS', 'UK', 'CY', 'GE', 'LI', 'ME')) %>%
+  #mutate(date= as.Date(sprintf("%i-%i-1", year, week), "%Y-%U-%u") ) %>%
+  #ggplot(aes(x = date, y =exp )) +
+  ggplot(aes(x = week, y = exp, group=as.factor(year), color=as.factor(year) )) +
+  geom_point(size=.25 ) +
+  geom_line() +
+  facet_wrap( ~country, scales = "fixed", ncol = 4, shrink = F) +
+  geom_hline(yintercept = 50, color="orange", alpha=.25, size=1.5) +
+  geom_hline(yintercept = 0, color='seagreen1', alpha=.25, size=1.5) +
+  ##coord_cartesian(ylim = c(-100, 200)) +
+  #scale_color_manual( values = c( "1"="red", "0"="steelblue" ), guide = FALSE ) +
+  theme_nikw() +
+  coord_polar(start=3*pi/2) +
+  labs(caption="", color = "Year") +
+  ggtitle("Excessive deaths in Europe 2020--2021",
+          subtitle ="(deaths_2020/2021 - average_2015--2019) / average_2015--2019 * 100%") +
+  scale_color_manual(values=c("red3", "purple3", "darkgoldenrod3")) +
+  scale_y_continuous(breaks=seq(-100, 200, by=50))
+
+p9
+ggsave(plot=p9, "EU_exdeaths_total_fn.png", width=pWd, height=pHtx)
+```
+
+## Excess mortality by age groups
+
+### The Data
+
+Deaths data from Eurostat (`demo_r_mwk_10_ts`; Deaths 
+by week, sex and 10-year age group; 
+https://ec.europa.eu/eurostat/databrowser/view/demo_r_mwk_10/default/table?lang=en):
+
+```{r}
+z <- get_eurostat("demo_r_mwk_10",  stringsAsFactors = FALSE) %>%
+  mutate (time = as.character(time)) %>%
+  mutate (year = as.numeric(substr(time, 1, 4)), 
+          week = as.numeric(substr(time, 6, 7)),
+          age = as.factor(age),
+          sex = as.factor(sex),
+          geo = as.factor(geo)) %>%
+  select (age, sex, geo, year, week, value=values) %>%
+  filter (sex == 'T')
+
+levels(z$age)
+```
+
+The `age` groups: `r levels(z$age)`.
+We skip all `sex` levels (`r levels(z$sex)`)  except `T` (ie total).
+We combine `Y_LT10`--`Y50-59`
+into one group (`00-59`) and recode the names of the remaining groups.
+Group `Y_GE80` is redundant so we skip it:
+
+
+```{r}
+agegrps <- c('00-59', '60-69', '70-79' , '80-89', '90-and-more', 'total')
+
+z <- z %>% select (age, sex, geo, year, week, value) %>%  
+  filter (sex == 'T') %>% 
+  filter ( age != 'Y_GE80' ) %>%
+  mutate(age=recode(age, 
+                    'Y_LT10' = '00-59',
+                    'Y10-19' = '00-59',
+                    'Y20-29' = '00-59',
+                    'Y30-39' = '00-59',
+                    'Y40-49' = '00-59',
+                    'Y50-59' = '00-59',
+                    'Y60-69' = "60-69",
+                    'Y70-79' = "70-79",
+                    'Y80-89' = "80-89",
+                    'Y_GE90' = "90-and-more",
+                    'TOTAL'  = "total")
+  ) %>% 
+  ## recalculate values
+  group_by(age, sex, geo, year, week) %>%
+  summarise(value = sum(value)) %>%
+  as.data.frame()
+```
+
+There are `r `levels(z$age)` age groups now. 
+
+### Veryfing data consistency
+
+Check how big is `UNK` (unknown) group:
+
+```{r}
+## Sprawdzenie age== UNK
+z.unk <- z %>% filter(age == 'UNK') %>%
+  group_by(geo) %>%
+  summarise(d = sum(value, na.rm = T))
+total.unknown <- sum(z.unk$d)
+```
+
+There are `r `total.unknown` unclassified deaths. We can safely skip
+this age group.
+
+We compare total deaths and sum of the deaths from other age categories. There
+should be no difference if the data is consistent:
+
+```{r}
+## wszystkie wg wieku (za wyj UNK)
+z.kn <- z %>% filter (age != 'UNK') %>%
+  group_by(geo, age) %>% summarise(d = sum(value, na.rm = T))
+
+## suma wg 'total' i po kategoriach
+z.kn.t <- z.kn %>% filter (age == 'total') %>% 
+  group_by(geo) %>% summarise(td = sum(d))
+z.kn.mf <- z.kn %>% filter (age != 'total') %>% 
+  group_by(geo) %>% summarise(mfd = sum(d))
+```
+
+Some countries have problems:
+
+```{r}
+kn.diff <- left_join(z.kn.t, z.kn.mf, by='geo') %>%
+  mutate (diff = td - mfd) %>%
+  filter (diff > 0) 
+kable(kn.diff)
+```
+
+French is strench (as usual):
+
+```{r}
+z.fr.00 <- z %>% filter (age != 'UNK' & geo == 'FR')
+
+z.fr.yr <- z.fr.00 %>% group_by(year, age) %>%
+  summarise(value = sum (value, na.rm = T)) %>%
+  pivot_wider(names_from = age, values_from = value) 
+kable(z.fr.yr)
+```
+
+There are no data for age groups for France in 2020. So age-group
+analysis for this country is not possible.
+
+
+## Total excess deaths by age groups
+
+```{r, warning=F, fig.width=pWd, fig.height=pHt}
+z <- z %>% filter (age != 'UNK')
+
+z0 <- z %>% filter ( year >= 2015 & year < 2020) %>% 
+  group_by(geo, age, week) %>% 
+  summarise (d0 = mean(value, na.rm=T))
+z1 <- z %>% filter ( year > 2019 ) %>% 
+  group_by(geo, age, year, week) %>% 
+  summarise ( d1 = sum(value))
+
+zz <- left_join(z0, z1, by=c("week", "age", "geo")) %>% drop_na(d0,d1) %>%
+  mutate (exp = (d1 - d0)/d0 * 100, exm = d1 - d0 )
+zz <- left_join(zz, nn, by=c('geo'='id'))
+
+## if NA then the country stop reporting in 2020
+zz.last.week <- zz %>% filter (year == 2021) %>% 
+  group_by (geo, age) %>% 
+  summarise (lw = last(week)) %>%
+    drop_na(lw)
+latestweek <- max (zz.last.week$lw)
+
+### total exmort 
+zzt <- zz %>% group_by(geo, age) %>% 
+  summarise(country=last(country), exm = sum(exm), nm = sum(d0)) %>%
+  mutate (exmp = exm/nm * 100)
+
+
+zztt <- left_join(zzt, zz.last.week, by=c('geo', 'age')) %>% 
+  drop_na(lw) %>% 
+  filter (lw >= latestweek - 6) 
+
+exm.total.countries <- zzt %>% filter (age != 'total') %>% summarise (exm = sum(exm))
+exm.total.ue <- sum (exm.total.countries$exm)
+
+zzttt <- zzt %>% group_by(age) %>% summarise(exm = sum(exm))  %>%
+  mutate (exp = exm/exm.total.ue * 100)
+
+## Wykres słupkowy
+source <- "© NI-KW @ github.com/knsm-psw/ | source: Eurostat demo_r_mwk_10 (Deaths by week, sex and 10-year age group)"
+note <- sprintf("%s\nFirst column in red = last week reported (excluded countries that reported in %i week or earlier)", source, latestweek - 6 - 1 )
+
+p5 <- zztt %>% ggplot(aes(x = reorder(country, exmp ))) +
+  geom_bar(aes(y = exmp), stat="identity", alpha=.4, fill="steelblue" ) +
+  geom_text(aes(label=sprintf("%.1f", exmp), y= exmp ), 
+            vjust=0.25, hjust=1.25, size=2, color='black' ) +
+  geom_text(aes(label=sprintf("%.0f", lw), y= 0 ), 
+            vjust=0.25, hjust=-1.25, size=2, color='brown4' ) +
+  xlab(label="") +
+  ylab(label="") +
+  facet_wrap( ~ age, scales = "fixed", ncol = 2, shrink = F) +
+  ggtitle(sprintf ("Total Excessive deaths in Europe 2020--2021 (by age groups)"),
+          subtitle ="Sum of (deaths_2020/2021 - average_2015--2019) / average_2015--2019 * 100%") +
+  theme_nikw() +
+  coord_flip() +
+  labs(caption=note)
+
+file_out <- sprintf ("EU_exdeaths_total_g6.png")
+ggsave(plot=p5, file_out, width=12, height=10)
+p5
+```
+
+Poland and the rest of Europe:
+
+```{r, warning=F,  fig.width=pWd, fig.height= pHt} 
+p6 <- zztt %>%  mutate( base=ifelse(geo=='PL', "1", "0")) %>% 
+  ggplot(aes(x = reorder(country, exmp ), fill=as.factor(base))) +
+  geom_bar(aes(y = exmp), stat="identity", alpha=.4 ) +
+  geom_text(aes(label=sprintf("%.1f", exmp), y= exmp ), 
+            vjust=0.25, hjust=1.25, size=2, color='black' ) +
+  geom_text(aes(label=sprintf("%.0f", lw), y= 0 ), 
+            vjust=0.25, hjust=-1.25, size=2, color='brown4' ) +
+  xlab(label="") +
+  ylab(label="") +
+  ###
+  facet_wrap( ~ age, scales = "fixed", ncol = 2, shrink = F) +
+  ##coord_cartesian() +
+  ggtitle(sprintf("Total Excessive deaths in Europe 2020--2021 (by age groups)"),
+          subtitle ="Sum of (deaths_2020/2021 - average_2015--2019) / average_2015--2019 * 100%") +
+  theme_nikw() +
+  coord_flip(ylim = c(-12, 45)) +
+  scale_fill_manual( values = c( "1"="red", "0"="steelblue" ), guide = FALSE ) +
+  labs(caption=note)
+
+#file_out <- sprintf ("EU_exdeaths_total_p_%s.png", this.age)
+file_out <- sprintf ("EU_exdeaths_total_p_g6.png")
+ggsave(plot=p6, file_out, width=12, height=10)
+p6
+```
+
+### Dynamics of excess mortality 2020--2021
+
+```{r,warning=F, width=20, height=30}
+note.xx <- source
+zznn <- zz
+
+## ## ###
+p8 <- zznn %>% filter (! geo %in% c('AL', 'AM', 'IE', 'IS', 'UK', 'CY', 'GE', 'LI', 'ME')) %>%
+  mutate( base=ifelse(geo=='PL', "1", "0")) %>% 
+  mutate(date= as.Date(sprintf("%i-%i-1", year, week), "%Y-%U-%u") ) %>%
+  ggplot(aes(x = date, y =exp,  color=as.factor(base ))) +
+  ##ggplot(aes(x = date, y =exp)) +
+  ##geom_point(size=.1) +
+  geom_smooth(aes(x = date, y =exp, group=geo), method="loess", size=.4, se = F, span =.25) +
+  geom_hline(yintercept = 50, color="firebrick", alpha=.2, size=1) +
+  geom_hline(yintercept = 100, color="red", alpha=.2, size=1) +
+  coord_cartesian(ylim = c(-30, 150)) +
+  scale_color_manual( values = c( "1"=mainColor, "0"="steelblue" ), guide = FALSE ) +
+  geom_hline(yintercept = 0, color='seagreen1', alpha=.25, size=1.5) +
+  theme_nikw() +
+  facet_wrap( ~ age, scales = "fixed", ncol = 2, shrink = F) +
+  ggtitle(sprintf ("Excessive deaths in Europe 2020--2021 (by age groups)"),
+          subtitle ="(deaths_2020/2021 - average_2015--2019) / average_2015--2019 * 100%\nLoess smoothing | Poland (pink line) vs other countries (blue lines)") +
+  scale_y_continuous(breaks=seq(-25, 150, by=25)) +
+  scale_x_date( labels = date_format("%y/%W"), breaks ="8 weeks") +
+  xlab(label="year/week") +
+  ylab(label="%") +
+  labs(caption=note.xx)
+p8
+file_out <- sprintf ("EU_exdeaths_total_y_g6.png")
+ggsave(plot=p8, file_out, width=12, height=10)
+
+```
